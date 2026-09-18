@@ -41,7 +41,7 @@ import {
   VerificationRequestEvent,
   type Verifier,
   VerifierEvent,
-} from "matrix-js-sdk/lib/crypto-api";
+} from "matrix-js-sdk/lib/crypto-api/index.js";
 import {
   DEFAULT_MATRIX_ACCOUNT_ID,
   listMatrixAccountIds,
@@ -77,16 +77,29 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * True when a group-room message genuinely mentions the bot localpart. The
- * localpart must appear as a whole token (optionally `@`-prefixed) rather than
- * as a substring of an unrelated word: a bot whose localpart is `ai` must not
- * treat "wait for the build" as a mention. Metacharacters in the localpart are
- * escaped, so a localpart like `bot.name` matches its literal text.
+ * Structured mentions identify the recipient independently of the displayed
+ * body. Only legacy events without m.mentions fall back to textual mentions.
  */
-function hasMatrixMention(content: string, localpart: string): boolean {
-  if (!localpart) return false;
-  const escaped = escapeRegExp(localpart);
-  return new RegExp(`(^|[^\\p{L}\\p{N}_])@?${escaped}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(content);
+function hasMatrixMention(content: RoomMessageEventContent, userId: string): boolean {
+  if (Object.hasOwn(content, "m.mentions")) {
+    const mentions = content["m.mentions"];
+    return Array.isArray(mentions?.user_ids) && mentions.user_ids.includes(userId);
+  }
+
+  const localpart = getMatrixLocalpart(userId);
+  if (!localpart || typeof content.body !== "string") return false;
+
+  // Matrix localparts include punctuation; a generic word boundary would admit
+  // @ai-helper or @ai:other-server as @ai. Full IDs also preserve their server
+  // and case. Keep legacy short/bare mentions and sentence punctuation.
+  const identityChars = "\\p{L}\\p{N}_.=+/@:\\-";
+  const before = `(^|[^${identityChars}])`;
+  const after = `(?=$|[^${identityChars}]|\\.(?=$|\\s))`;
+  if (new RegExp(`${before}${escapeRegExp(userId)}${after}`, "u").test(content.body)) {
+    return true;
+  }
+  const shortAfter = `(?=$|[^${identityChars}]|[.:](?=$|\\s))`;
+  return new RegExp(`${before}@?${escapeRegExp(localpart)}${shortAfter}`, "iu").test(content.body);
 }
 
 function matrixRoomSearchText(room: MatrixRoom): string {
@@ -1287,8 +1300,7 @@ export class MatrixService extends Service implements IMatrixService {
     // make it ignore the user. Group rooms still honor the gate.
     const isDirectRoom = room.getJoinedMemberCount() <= 2;
     if (state.settings.requireMention && !isDirectRoom) {
-      const localpart = getMatrixLocalpart(state.settings.userId);
-      if (!hasMatrixMention(message.content, localpart)) {
+      if (!hasMatrixMention(event.getContent(), state.settings.userId)) {
         return;
       }
     }
