@@ -73,7 +73,7 @@ function reserveEdge(ctx: WalkContext): void {
  * - Empty/nullish values are dropped
  * - Strings are trimmed
  * - Dates become deterministic ISO-8601 strings
- * - Errors become `Name: message` fragments
+ * - Errors include `Name: message` alongside enumerable own fields
  * - Objects become `key: value` fragments
  * - Scalars are stringified
  */
@@ -134,21 +134,16 @@ function flattenTextValuesWithAncestors(
 		}
 	}
 
-	// An Error's `name`/`message`/`stack` are non-enumerable, so the object
-	// branch below would enumerate nothing and drop the error entirely. That
-	// silently removes failures from diagnostic context, action-result data, and
-	// model-facing prompt text, so read the error's own fields directly.
-	if (value instanceof Error) {
-		return [formatErrorFragment(value)];
-	}
-
 	if (typeof value === "object") {
 		if (ctx.ancestors.has(value)) {
 			return [];
 		}
 		ctx.ancestors.add(value);
 		try {
-			const fragments: string[] = [];
+			// Error summaries supplement enumerable diagnostics under the same
+			// recursive traversal and cycle/work accounting as other objects.
+			const fragments: string[] =
+				value instanceof Error ? [formatErrorFragment(value)] : [];
 			const record = value as Record<string, unknown>;
 			for (const key in record) {
 				// Count inherited enumeration too so a hostile prototype cannot evade the
