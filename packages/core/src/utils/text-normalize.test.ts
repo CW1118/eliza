@@ -238,6 +238,62 @@ describe("flattenTextValues", () => {
 			);
 		});
 
+		it("retains structured error diagnostics alongside the message", () => {
+			const error = new ElizaError("Database connection timed out", {
+				code: "DB_QUERY_FAILED",
+				retryAt: 1_800_000_000_000,
+				context: { subsystem: "database", operation: "loadMessages" },
+				severity: "ephemeral",
+			});
+			const fragments = [
+				"ElizaError: Database connection timed out",
+				"name: ElizaError",
+				"code: DB_QUERY_FAILED",
+				"retryAt: 1800000000000",
+				"context: subsystem: database, operation: loadMessages",
+				"severity: ephemeral",
+			];
+
+			expect(flattenTextValues(error)).toEqual(fragments);
+			expect(toMultilineText({ failure: error, note: "retry pending" })).toBe(
+				`failure: ${fragments.join(", ")}\nnote: retry pending`,
+			);
+		});
+
+		it("skips cyclic error metadata and retains repeated error references", () => {
+			const error = Object.assign(new Error("Connection refused"), {
+				code: "ECONNREFUSED",
+				details: { attempt: 0, retry: false },
+			});
+			Object.assign(error, { self: error });
+			const fragments = [
+				"Error: Connection refused",
+				"code: ECONNREFUSED",
+				"details: attempt: 0, retry: false",
+			];
+
+			expect(flattenTextValues([error, error])).toEqual([
+				...fragments,
+				...fragments,
+			]);
+		});
+
+		it("applies the existing work budget to enumerable error fields", () => {
+			const error = Object.assign(
+				new Error("Too much diagnostic metadata"),
+				Object.fromEntries(
+					Array.from({ length: MAX_TEXT_NORMALIZE_NODES }, (_, index) => [
+						`value${index}`,
+						"kept",
+					]),
+				),
+			);
+
+			expect(() => flattenTextValues(error)).toThrowError(
+				expect.objectContaining({ code: TEXT_NORMALIZE_UNBOUNDED }),
+			);
+		});
+
 		it("does not treat a Map that mimics an error as one", () => {
 			const fake = new Map<string, string>([["message", "not an error"]]);
 			expect(flattenTextValues(fake)).toEqual([]);
