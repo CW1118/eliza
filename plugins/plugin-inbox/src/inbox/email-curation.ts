@@ -4,10 +4,11 @@
  * Pure: given an email plus context it produces a save/archive/delete/review
  * decision with a confidence band, supporting evidence, and citations back to
  * the subject/snippet/body it reasoned over. Identity and policy lookups (VIP
- * senders, retention rules) are injected as hooks so the engine carries no
- * connector or runtime dependency. Consumed by the inbox triage flow and
+ * senders, retention rules) are injected as hooks so the engine performs no
+ * connector or model I/O. Consumed by the inbox triage flow and
  * exposed at the `@elizaos/plugin-inbox/inbox/email-curation` subpath.
  */
+import { ElizaError } from "@elizaos/core";
 import { extractAsciiEmailAddress } from "./email-address.ts";
 
 export type EmailCurationAction = "save" | "archive" | "delete" | "review";
@@ -134,13 +135,6 @@ export interface EmailCurationPolicyEffect {
   code: string;
   message: string;
   citation?: EmailCurationCitation;
-  /**
-   * Set by the engine, never by producers: a malformed effect is preserved in
-   * `policyEffects` with a truthful reason instead of being silently applied or
-   * dropped, so the reviewer-facing decision shows why the hook's input was
-   * refused. Only non-finite `amount` values set this today.
-   */
-  invalidReason?: string;
 }
 
 export interface EmailCurationPolicyHookContext {
@@ -1274,6 +1268,27 @@ function provisionalAction(
   return "review";
 }
 
+function policyConfidencePenalty(
+  effect: EmailCurationPolicyEffect,
+  candidateId?: string,
+): number {
+  if (effect.amount === undefined) return 0.1;
+  if (!Number.isFinite(effect.amount) || effect.amount < 0) {
+    throw new ElizaError(
+      `Email curation policy effect "${effect.code}" requires a finite nonnegative amount; fix the policy hook output.`,
+      {
+        code: "INBOX_CURATION_INVALID_POLICY_AMOUNT",
+        context: {
+          effectCode: effect.code,
+          amount: String(effect.amount),
+          ...(candidateId === undefined ? {} : { candidateId }),
+        },
+      },
+    );
+  }
+  return effect.amount;
+}
+
 function applyPolicy(
   analysis: CandidateAnalysis,
   policy: ResolvedPolicy,
@@ -1326,18 +1341,10 @@ function applyPolicy(
       evidence: analysis.evidence,
     }) ?? [];
   for (const effect of hookEffects) {
-    // Validate untrusted hook input once, here, and preserve it as an explicit
-    // invalid effect rather than letting a non-finite amount reach the decision
-    // confidence. `invalidReason` is advisory text, never an applied penalty.
-    const invalidReason =
-      effect.kind === "lower_confidence" && effect.amount !== undefined
-        ? Number.isFinite(effect.amount) && effect.amount >= 0
-          ? undefined
-          : `ignored lower_confidence effect "${effect.code}": amount must be a finite nonnegative number`
-        : undefined;
-    analysis.policyEffects.push(
-      invalidReason === undefined ? effect : { ...effect, invalidReason },
-    );
+    if (effect.kind === "lower_confidence") {
+      policyConfidencePenalty(effect, analysis.candidate.id);
+    }
+    analysis.policyEffects.push(effect);
     if (effect.kind === "block_action" && effect.action) {
       if (!analysis.blockedActions.includes(effect.action)) {
         analysis.blockedActions.push(effect.action);
@@ -1400,15 +1407,7 @@ export function calibrateEmailCurationConfidence(
   }
   for (const effect of input.policyEffects) {
     if (effect.kind === "lower_confidence") {
-      // An omitted amount keeps the documented 0.1 default. A SUPPLIED amount
-      // must be a finite, nonnegative penalty: a malformed one (NaN/Infinity,
-      // or a negative boost) is an untrusted-hook failure that must not reach
-      // the confidence DTO, so it is skipped without fabricating a healthy 0.1.
-      if (effect.amount === undefined) {
-        confidence -= 0.1;
-      } else if (Number.isFinite(effect.amount) && effect.amount >= 0) {
-        confidence -= effect.amount;
-      }
+      confidence -= policyConfidencePenalty(effect);
     }
   }
   if (hasUncitedStrongSemanticEvidence(input.evidence)) {
