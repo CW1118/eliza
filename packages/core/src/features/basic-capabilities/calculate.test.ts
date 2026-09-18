@@ -109,8 +109,16 @@ describe("deterministic arithmetic routing", () => {
 	it("routes explicit arithmetic to CALCULATE at any operand width", () => {
 		for (const text of [
 			"whats 17 times 23",
+			"What is 341 times 17? Explain it by splitting 17 into 10 and 7.",
+			"what is 17 times 23 and show your work",
 			"17*23",
 			"whats 17 * 23",
+			"what is 4×6?",
+			"calculate 4×6",
+			"please 4×6",
+			"4×6 pls",
+			"(17 * 23)",
+			"2 * 3 + 4",
 			"whats 3847 times 292",
 			"3847 * 292?",
 			"1,234 divided by 7 pls",
@@ -140,6 +148,11 @@ describe("deterministic arithmetic routing", () => {
 
 	it("leaves time ranges, dimensions, dates, versions, and prose on the simple path", () => {
 		for (const text of [
+			"What is a 4×6 photo frame?",
+			"What is a 2*4 timber used for?",
+			"I read 2 times 3 chapters last week.",
+			"use the 4×6 image",
+			"use the 1920×1080 image",
 			"see you at 10 - 11 tomorrow",
 			"i walked 5 x this week",
 			"no math here at all",

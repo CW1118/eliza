@@ -1171,15 +1171,9 @@ export function inferDirectCurrentRequestCandidateActions(
 }
 
 /**
- * An explicit arithmetic request in the message ("whats 3847 times 292",
- * "1,234 * 56", "whats 17 times 23"). The request cue, not operand width, is
- * what makes the turn arithmetic: an explicit ask is computed exactly by
- * CALCULATE instead of recalled, at any operand size. The ambiguous operators
- * (- / + x) still need a math cue or a complete-expression message, because
- * they occur routinely in dates, ranges, phone numbers, versions, and
- * dimensions; a strong operator (times, *, ×, ÷, ...) is unambiguous on its
- * own. Operand width is not a routing boundary — two-digit mental math drifts
- * as readily as larger operands, and CALCULATE costs one deterministic call.
+ * Routes explicit arithmetic to CALCULATE at any operand width. Operators also
+ * occur in dimensions and descriptive prose, so a match needs a calculation cue
+ * or a complete expression/question. Bare calendar-year ranges remain prose.
  */
 const ARITHMETIC_OPERAND = "\\d[\\d,_]*(?:\\.\\d+)?";
 const STRONG_ARITHMETIC_OPERATOR =
@@ -1195,6 +1189,17 @@ const AMBIGUOUS_ARITHMETIC_EXPRESSION_RE = new RegExp(
 );
 const EXPLICIT_ARITHMETIC_REQUEST_CUE_RE =
 	/\b(?:calculate|compute|evaluate|solve|how\s+much|equals?|answer)\b/iu;
+const ARITHMETIC_REQUEST_EXPRESSION =
+	`[()\\s+\\-]*${ARITHMETIC_OPERAND}` +
+	`(?:[()\\s]*(?:${STRONG_ARITHMETIC_OPERATOR}|${AMBIGUOUS_ARITHMETIC_OPERATOR})[()\\s+\\-]*${ARITHMETIC_OPERAND})+[()\\s]*`;
+const COMPLETE_ARITHMETIC_REQUEST_RE = new RegExp(
+	`^\\s*(?:(?:please|pls)\\s+)?(?:what(?:'?s|\\s+is)\\s+)?${ARITHMETIC_REQUEST_EXPRESSION}(?:\\s+(?:please|pls))?\\s*[?!.]?\\s*$`,
+	"iu",
+);
+const ARITHMETIC_QUESTION_REQUEST_RE = new RegExp(
+	`^\\s*what(?:'?s|\\s+is)\\s+${ARITHMETIC_REQUEST_EXPRESSION}\\s*(?:[?!.](?:\\s|$)|\\s+(?:and|then)\\b)`,
+	"iu",
+);
 const WHAT_IS_AMBIGUOUS_ARITHMETIC_RE = new RegExp(
 	`^\\s*what(?:'s|\\s+is)\\s+[+\\-]?(?:${ARITHMETIC_OPERAND})\\s*${AMBIGUOUS_ARITHMETIC_OPERATOR}\\s*[+\\-]?(?:${ARITHMETIC_OPERAND})\\s*[?!.]?\\s*$`,
 	"iu",
@@ -1206,7 +1211,11 @@ const BARE_AMBIGUOUS_ARITHMETIC_RE = new RegExp(
 
 function looksLikeArithmeticRequest(text: string): boolean {
 	if (STRONG_ARITHMETIC_EXPRESSION_RE.test(text)) {
-		return true;
+		return (
+			EXPLICIT_ARITHMETIC_REQUEST_CUE_RE.test(text) ||
+			COMPLETE_ARITHMETIC_REQUEST_RE.test(text) ||
+			ARITHMETIC_QUESTION_REQUEST_RE.test(text)
+		);
 	}
 
 	const ambiguousMatch = AMBIGUOUS_ARITHMETIC_EXPRESSION_RE.exec(text);
