@@ -231,6 +231,50 @@ describe("Matrix service hardening", () => {
     );
   });
 
+  it.each([
+    ["displayed name", "Hello Eliza!", { user_ids: ["@ai:example"] }, true],
+    ["empty mentions", "@ai hello", {}, false],
+    ["other recipient", "@ai hello", { user_ids: ["@other:example"] }, false],
+    ["foreign recipient", "@ai hello", { user_ids: ["@ai:elsewhere"] }, false],
+    ["room mention", "@ai hello", { room: true }, false],
+    ["foreign full ID", "Hello @ai:elsewhere", undefined, false],
+    ["different ID case", "Hello @AI:example", undefined, false],
+    ...["-", ".", "=", "/", "+", "_"].map((punctuation) => [
+      `extended localpart ${punctuation}`,
+      `Hello @ai${punctuation}helper:example`,
+      undefined,
+      false,
+    ]),
+    ["full ID", "Hello @ai:example!", undefined, true],
+    ["full ID with period", "Hello @ai:example.", undefined, true],
+    ["short mention with period", "Hello @ai.", undefined, true],
+    ["legacy colon", "ai: hello", undefined, true],
+  ])("uses the intended Matrix recipient: %s", (_name, body, mentions, admitted) => {
+    const { runtime, service, state } = createService();
+    state.settings.userId = "@ai:example";
+    state.settings.requireMention = true;
+    const event = createEvent({
+      msgtype: "m.text",
+      body,
+      ...(mentions === undefined ? {} : { "m.mentions": mentions }),
+    });
+    (
+      service as unknown as {
+        handleRoomMessage: (state: TestState, event: unknown, room: unknown) => void;
+      }
+    ).handleRoomMessage(state, event, createRoom());
+    if (admitted) {
+      expect(runtime.emitEvent).toHaveBeenCalledWith(
+        MatrixEventTypes.MESSAGE_RECEIVED,
+        expect.anything()
+      );
+      expect(runtime.ensureConnection).toHaveBeenCalled();
+    } else {
+      expect(runtime.emitEvent).not.toHaveBeenCalled();
+      expect(runtime.ensureConnection).not.toHaveBeenCalled();
+    }
+  });
+
   it("does not treat a word containing the localpart as a required mention", () => {
     // userId "@ai:example" -> localpart "ai". The bounded gate must match a
     // genuine mention, not the "ai" inside "wait" / "again" / "email".
