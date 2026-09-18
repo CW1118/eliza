@@ -266,57 +266,61 @@ describe("policy-effect amount validation (#29309)", () => {
     ["positive Infinity", Number.POSITIVE_INFINITY],
     ["negative Infinity", Number.NEGATIVE_INFINITY],
     ["a negative boost", -0.5],
-  ])("a supplied %s amount never reaches the confidence", (_label, amount) => {
-    const confidence = calibrateEmailCurationConfidence({
-      action: "archive",
-      scores: { save: 0, archive: 2, delete: 0, review: 0 },
-      evidence: [],
-      degraded: false,
-      blockedDelete: false,
-      threadConflict: false,
-      policyEffects: [
-        { kind: "lower_confidence", amount, code: "t", message: "t" },
-      ],
-    });
-    expect(Number.isFinite(confidence)).toBe(true);
-    // Skipped without fabricating a 0.1 penalty: identical to no effect at all.
-    const noEffects = calibrateEmailCurationConfidence({
-      action: "archive",
-      scores: { save: 0, archive: 2, delete: 0, review: 0 },
-      evidence: [],
-      degraded: false,
-      blockedDelete: false,
-      threadConflict: false,
-      policyEffects: [],
-    });
-    expect(confidence).toBe(noEffects);
+  ])("a supplied %s amount rejects calibration", (_label, amount) => {
+    expect(() =>
+      calibrateEmailCurationConfidence({
+        action: "archive",
+        scores: { save: 0, archive: 2, delete: 0, review: 0 },
+        evidence: [],
+        degraded: false,
+        blockedDelete: false,
+        threadConflict: false,
+        policyEffects: [
+          { kind: "lower_confidence", amount, code: "t", message: "t" },
+        ],
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INBOX_CURATION_INVALID_POLICY_AMOUNT",
+        context: expect.objectContaining({ effectCode: "t" }),
+      }),
+    );
   });
 
-  it("rejects a non-finite hook amount end to end and records why", () => {
-    const policyHook: EmailCurationPolicyHook = () => [
-      {
-        kind: "lower_confidence",
-        amount: Number.NaN,
-        code: "bad_amount",
-        message: "malformed hook effect",
-      },
-    ];
-    const out = curateEmailCandidates({
-      candidates: [baseCandidate("hook-nan")],
-      now: "2026-08-23T00:00:00.000Z",
-      policyHook,
-    });
-
-    const decision = out.decisions.find((d) => d.candidateId === "hook-nan");
-    expect(decision).toBeDefined();
-    expect(Number.isFinite(decision?.confidence)).toBe(true);
-    expect(["low", "medium", "high"]).toContain(decision?.confidenceBand);
-    // The malformed effect is preserved with a truthful reason, not dropped.
-    const effect = decision?.policyEffects.find((e) => e.code === "bad_amount");
-    expect(effect?.invalidReason).toMatch(/finite nonnegative/);
-    // The reviewer-facing rationale can never carry the literal "NaN".
-    expect(decision?.bulkReview.rationale).not.toMatch(/NaN/);
-  });
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -0.5,
+  ])(
+    "rejects an invalid hook amount before returning a decision (%s)",
+    (amount) => {
+      const policyHook: EmailCurationPolicyHook = () => [
+        {
+          kind: "lower_confidence",
+          amount,
+          code: "bad_amount",
+          message: "malformed hook effect",
+        },
+      ];
+      expect(() =>
+        curateEmailCandidates({
+          candidates: [baseCandidate("hook-nan")],
+          now: "2026-08-23T00:00:00.000Z",
+          policyHook,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          code: "INBOX_CURATION_INVALID_POLICY_AMOUNT",
+          context: expect.objectContaining({
+            candidateId: "hook-nan",
+            effectCode: "bad_amount",
+            amount: String(amount),
+          }),
+        }),
+      );
+    },
+  );
 
   it("still applies a finite hook amount end to end", () => {
     const policyHook = (): ReturnType<EmailCurationPolicyHook> => [
@@ -333,72 +337,50 @@ describe("policy-effect amount validation (#29309)", () => {
       policyHook,
     });
     const decision = out.decisions.find((d) => d.candidateId === "hook-ok");
-    expect(Number.isFinite(decision?.confidence)).toBe(true);
+    const noHook = curateEmailCandidates({
+      candidates: [baseCandidate("hook-ok")],
+      now: "2026-08-23T00:00:00.000Z",
+    });
     expect(
-      decision?.policyEffects.find((e) => e.code === "ok_amount")
-        ?.invalidReason,
-    ).toBeUndefined();
+      noHook.decisions[0].confidence - (decision?.confidence ?? Number.NaN),
+    ).toBeCloseTo(0.3, 5);
   });
 });
 
 describe("email curation safe sort (NaN + tiebreak)", () => {
-  it("orders via curateEmailCandidates with NaN confidence tiebreak by candidateId", () => {
-    const baseCandidates: EmailCurationCandidate[] = [
-      {
-        id: "c-1",
-        threadId: null,
-        subject: "Hello",
-        snippet: "hi",
-        body: { text: "Hello world", contentType: "text/plain" as const },
-        from: "Alice Example <alice@example.com>",
-        fromEmail: "alice@example.com",
-        to: [],
-        cc: [],
-        labels: [],
-        headers: {},
-      },
-      {
-        id: "c-nan",
-        threadId: null,
-        subject: "Hello",
-        snippet: "hi",
-        body: { text: "Hello world", contentType: "text/plain" as const },
-        from: "Bob Example <bob@example.com>",
-        fromEmail: "bob@example.com",
-        to: [],
-        cc: [],
-        labels: [],
-        headers: {},
-      },
-    ];
-    const policyHook: EmailCurationPolicyHook = (ctx) => {
-      if (ctx.candidate.id === "c-nan") {
-        return [
-          {
-            kind: "lower_confidence" as const,
-            amount: Number.NaN,
-            code: "test_nan",
-            message: "force NaN",
-          },
-        ];
-      }
-      return [];
-    };
-    const out = curateEmailCandidates({
-      candidates: baseCandidates,
-      now: "2026-08-23T00:00:00.000Z",
-      policyHook,
-    });
-    // c-nan confidence becomes NaN -> sort score NaN -> coerced to 0, so it sorts last; tiebreak by candidateId if scores tie
-    const order = out.decisions.map((d) => d.candidateId);
-    // ensure both present and ranking is deterministic
-    expect(order).toContain("c-nan");
-    expect(order).toContain("c-1");
-    // c-1 should rank before c-nan because NaN -> 0 is smallest
-    expect(out.decisions[0]?.candidateId).toBe("c-1");
-    expect(out.decisions[0]?.rank).toBe(1);
-    expect(out.decisions[1]?.candidateId).toBe("c-nan");
-    expect(out.decisions[1]?.rank).toBe(2);
+  it("rejects a batch containing an invalid policy amount instead of ranking partial results", () => {
+    const candidates: EmailCurationCandidate[] = ["c-1", "c-nan"].map((id) => ({
+      id,
+      subject: "Hello",
+      body: { text: "Hello world", contentType: "text/plain" },
+      fromEmail: `${id}@example.com`,
+    }));
+    const policyHook: EmailCurationPolicyHook = ({ candidate }) =>
+      candidate.id === "c-nan"
+        ? [
+            {
+              kind: "lower_confidence",
+              amount: Number.NaN,
+              code: "test_nan",
+              message: "invalid penalty",
+            },
+          ]
+        : [];
+    expect(() =>
+      curateEmailCandidates({
+        candidates,
+        now: "2026-08-23T00:00:00.000Z",
+        policyHook,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "INBOX_CURATION_INVALID_POLICY_AMOUNT",
+        context: expect.objectContaining({
+          candidateId: "c-nan",
+          effectCode: "test_nan",
+        }),
+      }),
+    );
   });
 
   it("tiebreaks equal scores by candidateId via compareCurationDecisions", () => {
