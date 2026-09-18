@@ -486,18 +486,13 @@ export function safeSortNumber(value: unknown): number {
 	return Number.isNaN(numeric) ? 0 : numeric;
 }
 
-/**
- * Epoch milliseconds for a persisted timestamp, or `undefined` when the value
- * is absent or not finite. `safeSortNumber` deliberately preserves ±Infinity
- * for "never contacted" ranking; timestamp arithmetic and `toISOString` need
- * the opposite — reject-all-non-finite — because `Infinity` throws
- * `RangeError: Invalid time value` and a corrupt string silently poisons a
- * reported average into `NaN`.
- */
+/** Numeric or ISO stored timestamp representable by Date; invalid values are unavailable. */
 export function toFiniteTimestamp(value: unknown): number | undefined {
-	if (value === null || value === undefined || value === "") return undefined;
-	const numeric = typeof value === "number" ? value : Number(value);
-	return Number.isFinite(numeric) ? numeric : undefined;
+	if (typeof value !== "number" && typeof value !== "string") return undefined;
+	const timestamp = toMessageTimestamp(value);
+	return timestamp !== null && Number.isFinite(new Date(timestamp).getTime())
+		? timestamp
+		: undefined;
 }
 
 /**
@@ -1333,9 +1328,7 @@ export class RelationshipsService extends Service {
 			sharedConversationWindows,
 		});
 
-		// Omit measurement fields with no finite value rather than emitting an
-		// `undefined` key: an absent field is explicit "not measured", while a
-		// present-but-undefined one serializes to null and reads as a value.
+		// Omit unavailable measurements from the public analytics result.
 		const analytics: RelationshipAnalytics = {
 			strength,
 			interactionCount,
